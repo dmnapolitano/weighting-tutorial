@@ -74,6 +74,19 @@ def clean_cces(csv_path, statelevel_predictors_df, sample=False):
     return df
 
 
+def prepare_poststratification_data(poststrat_df, statelevel_predictors_df, cces_df):
+    df = poststrat_df.merge(statelevel_predictors_df, on=["state"], how="left")
+    df = cces_df.merge(df, how="left", on=["state", "eth", "male", "age", "educ"])
+    df = df.rename({"n_y": "n", "repvote_y": "repvote"}, axis=1)[
+        ["state", "eth", "male", "age", "educ", "n", "repvote"]
+    ]
+    df = df.merge(
+        df.groupby("state").agg({"n": "sum"}).reset_index().rename({"n": "state_total"}, axis=1)
+    )
+    df["state_percent"] = df["n"] / df["state_total"]
+    return df
+
+
 def fit_multilevel_regression(cces_df):
     # original formula from the MRP Case Studies:
     # abortion ~ (1 | state) + (1 | eth) + (1 | educ) + male +
@@ -88,9 +101,12 @@ def fit_multilevel_regression(cces_df):
         link="logit",
         data=cces_df,
     )
-    result = fit.fit(random_seed=SEED, target_accept=0.99,
-                     chains=2,
-                     idata_kwargs={"log_likelihood": True})
+    result = fit.fit(
+        random_seed=SEED,
+        target_accept=0.99,
+        chains=2,
+        idata_kwargs={"log_likelihood": True}
+    )
 
     print(fit)
     print()
@@ -103,4 +119,6 @@ if __name__ == "__main__":
     cces_df = clean_cces("data/cces18_common_vv.csv.gz", statelevel_predictors_df, sample=True)
     poststrat_df = pandas.read_csv("data/poststrat_df.csv")
 
-    fit_multilevel_regression(cces_df)
+    ps_df = prepare_poststratification_data(poststrat_df, statelevel_predictors_df, cces_df)
+
+    # fit_multilevel_regression(cces_df)
