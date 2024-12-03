@@ -1,6 +1,7 @@
 import pandas
 import bambi as bmb
 import arviz as az
+from tqdm import tqdm
 
 
 STATE_FIPS = {"01": "AL", "02": "AK", "04": "AZ", "05": "AR", "06": "CA", "08": "CO", "09": "CT",
@@ -55,6 +56,8 @@ def clean_cces(csv_path, statelevel_predictors_df, sample=False):
     df["educ"] = df["educ"].apply(lambda x : EDU[x])
     df["educ"] = df["educ"].apply(lambda x : "Some college" if x in ["Some college", "Associates"] else x)
 
+    actual_df = df.groupby(["state"])[["abortion"]].mean().reset_index()
+    
     df = df.dropna(axis=0).dropna(axis=1)
     if sample:
         df = df.sample(n=5000, random_state=SEED)
@@ -71,14 +74,14 @@ def clean_cces(csv_path, statelevel_predictors_df, sample=False):
     # TODO: about 240 region and repvote values are missing
     df = df.dropna(axis=0).dropna(axis=1)
 
-    return df
+    return (df, actual_df)
 
 
 def prepare_poststratification_data(poststrat_df, statelevel_predictors_df, cces_df):
     df = poststrat_df.merge(statelevel_predictors_df, on=["state"], how="left")
-    df = cces_df.merge(df, how="left", on=["state", "eth", "male", "age", "educ"])
+    df = cces_df.merge(df, how="left", on=["state", "eth", "male", "age", "educ", "region"])
     df = df.rename({"n_y": "n", "repvote_y": "repvote"}, axis=1)[
-        ["state", "eth", "male", "age", "educ", "n", "repvote"]
+        ["state", "eth", "male", "age", "educ", "n", "repvote", "region"]
     ]
     df = df.merge(
         df.groupby("state").agg({"n": "sum"}).reset_index().rename({"n": "state_total"}, axis=1)
@@ -95,30 +98,92 @@ def fit_multilevel_regression(cces_df):
     
     formula = "p(abortion, n) ~ (1 | state) + (1 | eth) + (1 | educ) + (1 | male:eth) + (1 | educ:age) + (1 | educ:eth) + male + repvote + C(region)"
     
-    fit = bmb.Model(
+    model = bmb.Model(
         formula,
         family="binomial",
         link="logit",
         data=cces_df,
     )
-    result = fit.fit(
+    result = model.fit(
         random_seed=SEED,
         target_accept=0.99,
         chains=2,
         idata_kwargs={"log_likelihood": True}
     )
 
-    print(fit)
+    print(model)
     print()
     print(az.summary(result, var_names=["Intercept", "1|state", "male", "1|educ", "1|eth", "repvote", "1|educ:age", "1|educ:eth"])
           .sort_values(by=["mean"], ascending=False))
 
+    return (model, result)
+
+
+def predict_poststratification(df, model, result, state_df):
+    model.predict(result, kind="response")
+    result_adjust = model.predict(result, data=df, inplace=False, kind="response")
+
+    # make adjustments by state
+    estimates = []
+    abortion_posterior_base = az.extract(result, num_samples=2000)["p"]
+    abortion_posterior_mrp = az.extract(result_adjust, num_samples=2000)["p"]
+
+    for s in tqdm(sorted(df["state"].unique())):
+        idx = df.index[df["state"] == s].tolist()
+        predicted_mrp = (
+            ((abortion_posterior_mrp[idx].mean(dim="sample") * df.iloc[idx]["state_percent"]))
+            .sum()
+            .item()
+        )
+        predicted_mrp_lb = (
+            (
+                (
+                    abortion_posterior_mrp[idx].quantile(0.025, dim="sample")
+                    * df.iloc[idx]["state_percent"]
+                )
+            )
+            .sum()
+            .item()
+        )
+        predicted_mrp_ub = (
+            (
+                (
+                    abortion_posterior_mrp[idx].quantile(0.975, dim="sample")
+                    * df.iloc[idx]["state_percent"]
+                )
+            )
+            .sum()
+            .item()
+        )
+        predicted = abortion_posterior_base[idx].mean().item()
+        base_lb = abortion_posterior_base[idx].quantile(0.025).item()
+        base_ub = abortion_posterior_base[idx].quantile(0.975).item()
+        estimates.append(
+            [s, predicted, base_lb, base_ub, predicted_mrp, predicted_mrp_ub, predicted_mrp_lb]
+        )
+
+    state_predicted = pandas.DataFrame(
+        estimates,
+        columns=["state", "base_expected", "base_lb", "base_ub", "mrp_adjusted", "mrp_ub", "mrp_lb"],
+    )
+    state_predicted = (
+        state_predicted.merge(state_df, on=["state"], how="left")
+        .sort_values("mrp_adjusted")
+        .rename({"abortion" : "census_share"}, axis=1)
+    )
+
+    return state_predicted
+
 
 if __name__ == "__main__":
     statelevel_predictors_df = pandas.read_csv("data/statelevel_predictors.csv")
-    cces_df = clean_cces("data/cces18_common_vv.csv.gz", statelevel_predictors_df, sample=True)
+    (cces_df, mean_state_df) = clean_cces("data/cces18_common_vv.csv.gz", statelevel_predictors_df, sample=True)
     poststrat_df = pandas.read_csv("data/poststrat_df.csv")
-
+    
     ps_df = prepare_poststratification_data(poststrat_df, statelevel_predictors_df, cces_df)
 
-    # fit_multilevel_regression(cces_df)
+    (mr_model, mr_result) = fit_multilevel_regression(cces_df)
+
+    state_mrp_df = predict_poststratification(ps_df, mr_model, mr_result, mean_state_df)
+
+    print(state_mrp_df)
