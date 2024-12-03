@@ -1,4 +1,6 @@
 import pandas
+import bambi as bmb
+import arviz as az
 
 
 STATE_FIPS = {"01": "AL", "02": "AK", "04": "AZ", "05": "AR", "06": "CA", "08": "CO", "09": "CT",
@@ -14,8 +16,10 @@ ETH = {1 : "White", 2 : "Black", 3 : "Hispanic", 4 : "Asian", 5 : "Native Americ
 
 EDU = {1 : "No HS", 2 : "HS", 3 : "Some college", 4 : "Associates", 5 : "4-Year College", 6 : "Post-grad"}
 
+SEED = 1010
 
-def clean_cces(csv_path, seed=1010):
+
+def clean_cces(csv_path, statelevel_predictors_df, sample=False):
     # port of
     # https://bookdown.org/jl5522/MRP-case-studies/introduction-to-mister-p.html#appendix-downloading-and-processing-data
     # section 1.6.1
@@ -52,15 +56,51 @@ def clean_cces(csv_path, seed=1010):
     df["educ"] = df["educ"].apply(lambda x : "Some college" if x in ["Some college", "Associates"] else x)
 
     df = df.dropna(axis=0).dropna(axis=1)
+    if sample:
+        df = df.sample(n=5000, random_state=SEED)
+    df = df.reset_index().rename(columns={"index" : "caseid"})
+
+    # grouping based on https://bambinos.github.io/bambi/notebooks/mister_p.html
+    df = (df.groupby(["state", "eth", "male", "age", "educ"], observed=False)
+          .agg({"caseid": "nunique", "abortion": "sum"})
+          .reset_index()
+          .sort_values("abortion", ascending=False)
+          .rename({"caseid": "n"}, axis=1)
+          .merge(statelevel_predictors_df, on=["state"], how="left")
+          )
+    # TODO: about 240 region and repvote values are missing
+    df = df.dropna(axis=0).dropna(axis=1)
+
+    return df
+
+
+def fit_multilevel_regression(cces_df):
+    # original formula from the MRP Case Studies:
+    # abortion ~ (1 | state) + (1 | eth) + (1 | educ) + male +
+    #    (1 | male:eth) + (1 | educ:age) + (1 | educ:eth) +
+    #    repvote + factor(region)
     
-    return df.sample(n=5000, random_state=seed)
+    formula = "p(abortion, n) ~ (1 | state) + (1 | eth) + (1 | educ) + (1 | male:eth) + (1 | educ:age) + (1 | educ:eth) + male + repvote + C(region)"
+    
+    fit = bmb.Model(
+        formula,
+        family="binomial",
+        link="logit",
+        data=cces_df,
+    )
+    result = fit.fit(random_seed=SEED, target_accept=0.99,
+                     chains=2,
+                     idata_kwargs={"log_likelihood": True})
+
+    print(fit)
+    print()
+    print(az.summary(result, var_names=["Intercept", "1|state", "male", "1|educ", "1|eth", "repvote", "1|educ:age", "1|educ:eth"])
+          .sort_values(by=["mean"], ascending=False))
 
 
 if __name__ == "__main__":
-    cces_df = clean_cces("data/cces18_common_vv.csv.gz")
-    poststrat_df = pandas.read_csv("data/poststrat_df.csv")
     statelevel_predictors_df = pandas.read_csv("data/statelevel_predictors.csv")
+    cces_df = clean_cces("data/cces18_common_vv.csv.gz", statelevel_predictors_df, sample=True)
+    poststrat_df = pandas.read_csv("data/poststrat_df.csv")
 
-    print(cces_df)
-    print(poststrat_df)
-    print(statelevel_predictors_df)
+    fit_multilevel_regression(cces_df)
