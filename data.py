@@ -1,4 +1,5 @@
 import pandas
+import requests
 
 
 CROSSTAB_COLS = ["CD1", "CD2", "CD3", "CD4", "VOTED_2020_TRUMP", "VOTED_2020_BIDEN", "VOTED_2020_DIDNT",
@@ -61,3 +62,19 @@ def load_crosstab_data():
     crosstab_df = temp.copy()
 
     return crosstab_df
+
+
+def get_census_data():
+    response = requests.get("https://api.census.gov/data/2023/acs/acs5?get=B05009_001E,B29002_001E,B29002_005E,B29002_006E,B29002_007E,B29002_008E&for=state:19")
+    response.raise_for_status()
+
+    s = pandas.Series(response.json()[1], index=response.json()[0]).astype(int)
+    del s["state"]
+    s = s.rename({"B05009_001E" : "child_under_18", "B29002_001E" : "cvap"})
+
+    # from some college -> graduate and professional degree
+    s["cvap_college"] = s[s.index.str.contains("B29002")].sum()
+    s["cvap_no_college"] = s["cvap"] - s["cvap_college"]
+    s = s[~s.index.str.contains("B29002")].copy()
+
+    return s
