@@ -18,7 +18,7 @@ class Reweighter(ABC):
         self._cols = cols
 
 
-    def reweight(self):
+    def reweight(self, return_weights=False):
         raise NotImplementedError
 
 
@@ -32,7 +32,7 @@ class Reweighter(ABC):
 
 
 class CellReweighter(Reweighter):
-    def reweight(self):
+    def reweight(self, return_weights=False):
         weight_cols = [c + "_weight" for c in self._cols]
         
         # first generate weights for the crosstab vs. the sample
@@ -53,13 +53,14 @@ class CellReweighter(Reweighter):
         weights = ct_v_sample[weight_cols] * sample_v_pop[weight_cols]
         weights = weights.rename(columns=dict(zip(weight_cols, self._cols)))
 
-        # apply weights to sample
-        # TODO: return the weights too?
+        if return_weights:
+            return weights
+        # else, apply weights to sample
         return self._apply_weights(weights)
 
 
 class RakeReweighter(Reweighter):
-    def reweight(self):
+    def reweight(self, return_weights=False):
         # first generate weights for the crosstab vs. the sample
         ct_v_sample = self._rake(self._ct_df, self._sample_df)
         print(f"Survey crosstab vs. survey sample F = {self.f(ct_v_sample.values)}", file=stderr)
@@ -70,9 +71,10 @@ class RakeReweighter(Reweighter):
 
         # combine to get final weights
         weights = ct_v_sample * sample_v_pop
-        
-        # apply weights to sample
-        # TODO: return the weights too?
+
+        if return_weights:
+            return weights
+        # else, apply weights to sample
         return self._apply_weights(weights)
 
 
