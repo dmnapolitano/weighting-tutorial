@@ -1,3 +1,4 @@
 bambi
 pandas
 pytest
+samplics @ https://github.com/samplics-org/samplics.git

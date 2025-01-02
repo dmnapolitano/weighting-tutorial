@@ -1,5 +1,6 @@
 import pandas
 from pandas.testing import assert_frame_equal
+from samplics.weighting import SampleWeight
 
 from mrp.cell_weighting import CellReweighter, RakeReweighter
 
@@ -33,3 +34,28 @@ def test_basic_raking():
     current_df = rr.reweight(return_weights=True)
 
     assert_frame_equal(expected_df, current_df, rtol=1e-2)
+
+
+def test_GREG_weighting():
+    # reformat our crosstabs
+    ct_df = CT_DF.copy().reset_index().melt(id_vars="index")
+    ct_df["A"] = ct_df["index"].str[1].astype(float)
+    ct_df["B"] = ct_df["variable"].str[1].astype(float)
+
+    # get the population totals we want to weight by
+    sample_df = SAMPLE_DF.copy().reset_index().melt(id_vars="index")
+    sample_df["A"] = sample_df["index"].str[1].astype(float)
+    sample_df["B"] = sample_df["variable"].str[1].astype(float)
+    totals = {"A" : (sample_df["A"] * sample_df["value"]).sum(),
+              "B" : (sample_df["B"] * sample_df["value"]).sum()}
+
+    # apply GREG calibration and divide to get the weights
+    ct_df["calibration"] = SampleWeight().calibrate(ct_df["value"], ct_df[["A", "B"]], totals)
+    ct_df["weights"] = ct_df["calibration"] / ct_df["value"]
+
+    # column x row of Table 2.D in Kalton et al. (2003)
+    ct_df["expected"] = [1.21, 1.43, 1.66, 1.88,
+                         1.17, 1.40, 1.62, 1.85,
+                         1.14, 1.36, 1.59, 1.81]
+
+    assert (ct_df["expected"] - ct_df["weights"].round(2)).mean() < 0.01
