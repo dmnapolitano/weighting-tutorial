@@ -2,7 +2,7 @@ import pandas
 from pandas.testing import assert_frame_equal
 from samplics.weighting import SampleWeight
 
-from mrp.cell_weighting import CellReweighter, RakeReweighter
+from src.cell_weighting import CellReweighter, RakeReweighter
 
 # examples from
 # Kalton, G., & Flores-Cervantes, I. (2003). Weighting Methods. Journal of Official Statistics, 19(2), 81–97.

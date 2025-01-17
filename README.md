@@ -1,4 +1,4 @@
-# Python Implementation of MRP ("Mister P")
+# Teaching Myself Survey Weighting Techniques and MRP ("Mister P")
 
 ## References
 
